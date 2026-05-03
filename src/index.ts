@@ -68,11 +68,21 @@ app.use(async (req, res) => {
         return;
     }
     // check if the url is valid
+    let parsedUrl: URL;
     try {
-        new URL(url);
+        parsedUrl = new URL(url);
     } catch (e) {
         res.status(400).send('invalid url');
         return;
+    }
+    switch(parsedUrl.hostname) {
+        case 'www.youtube.com':
+        case 'youtube.com':
+        case 'youtu.be':
+            break;
+        default:
+            res.redirect(url);
+            return;
     }
 
     console.log('Received request for URL:', url);
