@@ -1,0 +1,6 @@
+services:
+  yt-dlp-redirect:
+    image: yt-dlp-redirect:latest
+    build: .
+    pull_policy: build
+    restart: unless-stopped
