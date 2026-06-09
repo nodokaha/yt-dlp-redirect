@@ -3,4 +3,5 @@ services:
     image: yt-dlp-redirect:latest
     build: .
     pull_policy: build
+    expose: 3000
     restart: unless-stopped
