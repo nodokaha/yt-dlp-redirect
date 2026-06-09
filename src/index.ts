@@ -35,7 +35,7 @@ async function getStreamUrls(url: string) {
     }
 
     const promise = (async () => {
-        const args = ['-f', "best[ext=mp4][protocol=https]", '-g', url];
+        const args = ['--no-playlist', '-f', "best[ext=mp4][protocol=https]", '-g', url];
         const { stdout } = await execFileAsync('yt-dlp', args, { timeout: 15000 });
         const [videoUrl] = stdout.trim().split('\n');
         const data = { videoUrl };
