@@ -162,6 +162,7 @@ app.use(async (req, res) => {
         if (!res.headersSent) {
             res.status(502).send('proxy failed');
         }
+    }
 });
 
 const PORT = process.env.PORT || 3000;
