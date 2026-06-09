@@ -64,7 +64,7 @@ app.use(async (req, res) => {
     // the url is encoded with uri component, so we need to decode it
     const url = decodeURIComponent(req.url.substring(1)); // remove the leading '/'
     if (!url) {
-        res.status(400).send('missing url');
+        res.status(200).send('missing url');
         return;
     }
     // check if the url is valid
