@@ -1,5 +1,5 @@
 # Use the latest Node.js image
-FROM node:latest
+FROM node:lts-slim
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
