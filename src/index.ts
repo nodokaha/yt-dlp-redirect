@@ -35,7 +35,7 @@ async function getStreamUrls(url: string) {
     }
 
     const promise = (async () => {
-        const args = ['--no-playlist', '-f', "best[ext=mp4][protocol=https]", '-g', url];
+        const args = ['--no-playlist', '-f', 'bv*[vcodec^=avc1]+ba[ext=m4a]/best[ext=mp4]/best', '-g', url];
         const { stdout } = await execFileAsync('yt-dlp', args, { timeout: 15000 });
         const [videoUrl] = stdout.trim().split('\n');
         const data = { videoUrl };
@@ -95,74 +95,8 @@ app.use(async (req, res) => {
     }
     
     const { videoUrl } = streamData;
-    // console.log('Redirecting to:', videoUrl);
-    // res.redirect(videoUrl);
-
-    try {
-        // --- 1. 切断検知のための AbortController を用意 ---
-        const abortController = new AbortController();
-        
-        // クライアントが接続を切断したら、Googleへのfetchも中断する
-        req.on('close', () => {
-            abortController.abort();
-        });
-
-        // --- forward Range header ---
-        const headers: { [key: string]: string } = {};
-        if (req.headers.range) {
-            headers['Range'] = req.headers.range;
-        }
-
-        // --- fetch from Google (signalを渡す) ---
-        const upstream = await fetch(videoUrl, { 
-            headers,
-            signal: abortController.signal // 👈 ここに追加
-        });
-
-        // --- forward status (200 / 206) ---
-        res.status(upstream.status);
-
-        // --- forward important headers ---
-        const passthroughHeaders = [
-            'content-type',
-            'content-length',
-            'content-range',
-            'accept-ranges'
-        ];
-
-        passthroughHeaders.forEach(h => {
-            const v = upstream.headers.get(h);
-            if (v) res.setHeader(h, v);
-        });
-
-        // --- stream body ---
-        const body = upstream.body;
-        if (body != null) {
-            // Node.js 20+ / 22+ で推奨されるWeb StreamからNode Streamへの変換とパイプ
-            const nodeStream = Readable.fromWeb(body as any);
-            
-            // クライアント切断時にストリームを適切に解放する
-            nodeStream.pipe(res);
-
-            // ストリームエラーでプロセスが落ちないようにハンドリング
-            nodeStream.on('error', (err: any) => {
-                // Abortによるエラー、またはクライアント切断によるECONNRESETは無視してOK
-                if (err.name !== 'AbortError' && err.code !== 'ECONNRESET') {
-                    console.error('Stream error:', err);
-                }
-            });
-        }
-    } catch (err: any) {
-        // 自分が中断した(Abort)場合はエラーログを出さない
-        if (err.name === 'AbortError') {
-            console.log('Request aborted by client.');
-            return;
-        }
-        console.error(err);
-        if (!res.headersSent) {
-            res.status(502).send('proxy failed');
-        }
-    }
+    console.log('Redirecting to:', videoUrl);
+    res.redirect(videoUrl);
 });
 
 const PORT = process.env.PORT || 3000;
