@@ -4,23 +4,16 @@ import { promisify } from 'util';
 import { Readable } from 'stream';
 
 const execFileAsync = promisify(execFile);
-
 const app = express();
 
 function handleError(e: any): Error {
-    if (e instanceof Error) {
-        return e;
-    } else if (typeof e === 'string') {
-        return new Error(e);
-    } else {
-        return new Error('Unknown error');
-    }
+    if (e instanceof Error) return e;
+    if (typeof e === 'string') return new Error(e);
+    return new Error('Unknown error');
 }
 
 const cache = new Map();
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
-
-// prevents duplicate yt-dlp calls in-flight
 const inFlight = new Map();
 
 async function getStreamUrls(url: string) {
@@ -29,21 +22,49 @@ async function getStreamUrls(url: string) {
         return cached.data;
     }
 
-    // 🧠 dedupe concurrent requests
     if (inFlight.has(url)) {
         return inFlight.get(url);
     }
 
     const promise = (async () => {
-        const args = ['--no-playlist', '-f', "best[ext=mp4][protocol=https]", '-g', url];
+        const args = [
+            '--no-playlist', 
+            '-f', 'best[ext=mp4][protocol=https]/best', 
+            '-j', 
+            url
+        ];
+        
         const { stdout } = await execFileAsync('yt-dlp', args, { timeout: 15000 });
-        const [videoUrl] = stdout.trim().split('\n');
-        const data = { videoUrl };
-        cache.set(url, {
-            data,
-            expires: Date.now() + CACHE_TTL
-        });
+        const videoInfo = JSON.parse(stdout.trim());
 
+        let videoUrl = videoInfo.url || ''; 
+        let isLive = false;
+
+        if (
+            videoInfo.is_live === true || 
+            videoInfo.live_status === 'is_live' ||
+            (typeof videoUrl === 'string' && videoUrl.includes('manifest/hls_playlist')) || 
+            (typeof videoInfo.protocol === 'string' && videoInfo.protocol.includes('m3u8'))
+        ) {
+            isLive = true;
+        }
+
+        if (!videoUrl && Array.isArray(videoInfo.formats)) {
+            const suitableFormat = videoInfo.formats.reverse().find((f: any) => 
+                f.url && typeof f.protocol === 'string' && f.protocol.startsWith('http')
+            );
+            if (suitableFormat) {
+                videoUrl = suitableFormat.url;
+            }
+        }
+
+        if (!videoUrl) {
+            throw new Error('動画のURLを抽出できませんでした。');
+        }
+
+        const data = { videoUrl, isLive };
+        
+        cache.set(url, { data, expires: Date.now() + CACHE_TTL });
         return data;
     })();
 
@@ -59,15 +80,13 @@ async function getStreamUrls(url: string) {
     }
 }
 
-// sub to any url
 app.use(async (req, res) => {
-    // the url is encoded with uri component, so we need to decode it
-    const url = decodeURIComponent(req.url.substring(1)); // remove the leading '/'
+    const url = decodeURIComponent(req.url.substring(1));
     if (!url) {
         res.status(200).send('missing url');
         return;
     }
-    // check if the url is valid
+
     let parsedUrl: URL;
     try {
         parsedUrl = new URL(url);
@@ -75,6 +94,7 @@ app.use(async (req, res) => {
         res.status(400).send('invalid url');
         return;
     }
+
     switch(parsedUrl.hostname) {
         case 'www.youtube.com':
         case 'youtube.com':
@@ -94,79 +114,70 @@ app.use(async (req, res) => {
         return;
     }
     
-    const { videoUrl } = streamData;
-    // console.log('Redirecting to:', videoUrl);
-    // res.redirect(videoUrl);
+    const { videoUrl, isLive } = streamData;
 
-    try {
-        // --- 1. 切断検知のための AbortController を用意 ---
-        const abortController = new AbortController();
+    if (isLive) {
+        console.log('Detected Live. Redirecting to HLS URL:', videoUrl);
+        res.redirect(videoUrl);
+    } else {
+        console.log('Detected Normal Video. Proxying stream (original behavior)...');
         
-        // クライアントが接続を切断したら、Googleへのfetchも中断する
-        req.on('close', () => {
-            abortController.abort();
-        });
-
-        // --- forward Range header ---
-        const headers: { [key: string]: string } = {};
-        if (req.headers.range) {
-            headers['Range'] = req.headers.range;
-        }
-
-        // --- fetch from Google (signalを渡す) ---
-        const upstream = await fetch(videoUrl, { 
-            headers,
-            signal: abortController.signal // 👈 ここに追加
-        });
-
-        // --- forward status (200 / 206) ---
-        res.status(upstream.status);
-
-        // --- forward important headers ---
-        const passthroughHeaders = [
-            'content-type',
-            'content-length',
-            'content-range',
-            'accept-ranges'
-        ];
-
-        passthroughHeaders.forEach(h => {
-            const v = upstream.headers.get(h);
-            if (v) res.setHeader(h, v);
-        });
-
-        // --- stream body ---
-        const body = upstream.body;
-        if (body != null) {
-            // Node.js 20+ / 22+ で推奨されるWeb StreamからNode Streamへの変換とパイプ
-            const nodeStream = Readable.fromWeb(body as any);
+        try {
+            const abortController = new AbortController();
             
-            // クライアント切断時にストリームを適切に解放する
-            nodeStream.pipe(res);
-
-            // ストリームエラーでプロセスが落ちないようにハンドリング
-            nodeStream.on('error', (err: any) => {
-                // Abortによるエラー、またはクライアント切断によるECONNRESETは無視してOK
-                if (err.name !== 'AbortError' && err.code !== 'ECONNRESET') {
-                    console.error('Stream error:', err);
-                }
+            req.on('close', () => {
+                abortController.abort();
             });
-        }
-    } catch (err: any) {
-        // 自分が中断した(Abort)場合はエラーログを出さない
-        if (err.name === 'AbortError') {
-            console.log('Request aborted by client.');
-            return;
-        }
-        console.error(err);
-        if (!res.headersSent) {
-            res.status(502).send('proxy failed');
+
+            const headers: { [key: string]: string } = {};
+            if (req.headers.range) {
+                headers['Range'] = req.headers.range;
+            }
+
+            const upstream = await fetch(videoUrl, { 
+                headers,
+                signal: abortController.signal
+            });
+
+            res.status(upstream.status);
+
+            const passthroughHeaders = [
+                'content-type',
+                'content-length',
+                'content-range',
+                'accept-ranges'
+            ];
+
+            passthroughHeaders.forEach(h => {
+                const v = upstream.headers.get(h);
+                if (v) res.setHeader(h, v);
+            });
+
+            const body = upstream.body;
+            if (body != null) {
+                const nodeStream = Readable.fromWeb(body as any);
+                nodeStream.pipe(res);
+
+                nodeStream.on('error', (err: any) => {
+                    if (err.name !== 'AbortError' && err.code !== 'ECONNRESET') {
+                        console.error('Stream error:', err);
+                    }
+                });
+            }
+        } catch (err: any) {
+            if (err.name === 'AbortError') {
+                console.log('Request aborted by client.');
+                return;
+            }
+            console.error(err);
+            if (!res.headersSent) {
+                res.status(502).send('proxy failed');
+            }
         }
     }
 });
 
 const PORT = process.env.PORT || 3000;
-
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
