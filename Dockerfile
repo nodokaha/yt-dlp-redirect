@@ -1,43 +1,26 @@
-# Use the latest Node.js image
-FROM node:lts-slim
+FROM node:22-bookworm-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    unzip \
-    ffmpeg \
-    python3 \
-    python3-pip \
+ENV DEBIAN_FRONTEND=noninteractive \
+    NODE_ENV=production \
+    PORT=3000
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates ffmpeg python3 python3-pip \
+    && pip3 install --no-cache-dir --break-system-packages -U yt-dlp \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Install latest Deno
-RUN curl -fsSL https://deno.land/install.sh | sh
-
-# Add Deno to PATH
-ENV DENO_INSTALL="/root/.deno"
-ENV PATH="${DENO_INSTALL}/bin:${PATH}"
-
-# Install latest yt-dlp
-RUN pip3 install --break-system-packages -U --pre yt-dlp
-
-# Set the working directory inside the container
 WORKDIR /app
 
-# Copy package files first for better layer caching
-COPY package*.json ./
+RUN corepack enable
 
-# Install dependencies
-RUN npm ci
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 
-# Copy the rest of the application files
-COPY . .
+COPY tsconfig.json ./
+COPY src ./src
+RUN pnpm build && pnpm prune --prod
 
-# Build the application
-#RUN npm run build
-
-# Expose the default app port (adjust if needed)
 EXPOSE 3000
 
-# Start the application when the container launches
-#CMD ["npm", "start"]
-CMD ["npm", "run", "dev"]
+CMD ["node", "dist/index.js"]
